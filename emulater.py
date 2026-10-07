@@ -1,15 +1,25 @@
-"""Эмулятор оболочки ОС. Этап 1: REPL."""
+#!/usr/bin/env python3
+"""
+Эмулятор оболочки ОС (этапы 1-2) в одном файле, GUI на tkinter.
+
+Запуск:  python emulator.py [--vfs <путь>] [--script <путь>]
+"""
+import argparse
+import os
+import sys
 import tkinter as tk
 from tkinter import scrolledtext
 
 
+# ---------- Ошибка выполнения ----------
 class ShellError(Exception):
     pass
 
 
+# ---------- Парсер: "..." '...' и \-экранирование ----------
 def parse(line):
     tokens, cur = [], []
-    in_token = False
+    in_token = False          # отличает пустой аргумент "" от отсутствия аргумента
     quote = None
     i, n = 0, len(line)
     while i < n:
@@ -44,6 +54,7 @@ def parse(line):
     return tokens
 
 
+# ---------- Ядро: выполнение команд ----------
 class Shell:
     def __init__(self):
         self.exit_requested = False
@@ -53,6 +64,7 @@ class Shell:
         return "%s: args = [%s]" % (name, ", ".join("<%s>" % a for a in args))
 
     def execute(self, line):
+        """Возвращает вывод команды или бросает ShellError."""
         tokens = parse(line)
         if not tokens:
             return ""
@@ -71,14 +83,51 @@ class Shell:
         raise ShellError("%s: command not found" % cmd)
 
 
+# ---------- Параметры командной строки ----------
+class Config:
+    def __init__(self, vfs=None, script=None):
+        self.vfs = vfs
+        self.script = script
+
+    @property
+    def vfs_name(self):
+        if not self.vfs:
+            return "vfs"
+        return os.path.basename(os.path.abspath(self.vfs)) or "vfs"
+
+    def debug_string(self):
+        vfs = os.path.abspath(self.vfs) if self.vfs else "<not set>"
+        script = os.path.abspath(self.script) if self.script else "<not set>"
+        return "[debug] vfs    = %s\n[debug] script = %s" % (vfs, script)
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message):            # единый формат ошибки, код выхода 2
+        sys.stderr.write("error: %s\n" % message)
+        sys.exit(2)
+
+
+def parse_args(argv):
+    p = _Parser(prog="emulator.py", description="Shell emulator")
+    p.add_argument("--vfs", metavar="PATH", help="путь к физическому расположению VFS")
+    p.add_argument("--script", metavar="PATH", help="путь к стартовому скрипту")
+    ns = p.parse_args(argv)
+    if ns.vfs is not None and not os.path.exists(ns.vfs):
+        sys.stderr.write("error: VFS path does not exist: %s\n" % ns.vfs)
+        sys.exit(2)
+    return Config(ns.vfs, ns.script)
+
+
+# ---------- GUI ----------
 class EmulatorWindow:
-    def __init__(self, root):
+    def __init__(self, root, config):
         self.root = root
+        self.config = config
         self.shell = Shell()
-        self.prompt = "user@vfs:~$ "
+        self.prompt = "Ввод:"
         self.history, self.hpos = [], 0
 
-        root.title("Emulator — [vfs]")
+        root.title("Emulator — [%s]" % config.vfs_name)
         root.geometry("800x500")
 
         self.output = scrolledtext.ScrolledText(
@@ -105,15 +154,19 @@ class EmulatorWindow:
         self.output.see("end")
 
     def run_line(self, line):
+        """Выполняет строку; True, если без ошибки."""
         self.println(self.prompt + line)
+        ok = True
         try:
             out = self.shell.execute(line)
             if out:
                 self.println(out)
         except ShellError as e:
             self.println("error: %s" % e)
+            ok = False
         if self.shell.exit_requested:
             self.root.destroy()
+        return ok
 
     def on_enter(self, _event):
         line = self.entry.get()
@@ -137,10 +190,40 @@ class EmulatorWindow:
         else:
             self.hpos = len(self.history)
 
+    def show_debug(self):
+        self.println(self.config.debug_string())
+
+    def run_startup_script(self):
+        """Ввод и вывод видны; остановка на первой ошибке."""
+        path = self.config.script
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                lines = f.read().splitlines()
+        except OSError as e:
+            self.println("script error: cannot read '%s': %s" % (path, e))
+            return
+        self.println("--- running startup script: %s ---" % path)
+        for num, line in enumerate(lines, 1):
+            t = line.strip()
+            if not t or t.startswith("#"):
+                continue
+            if not self.run_line(line):
+                self.println("script error: execution stopped at line %d: %s" % (num, line))
+                return
+            if self.shell.exit_requested:
+                return
+        self.println("--- startup script finished ---")
+
 
 def main():
+    config = parse_args(sys.argv[1:])
+    print(config.debug_string())          # отладочный вывод параметров
     root = tk.Tk()
-    EmulatorWindow(root)
+    win = EmulatorWindow(root, config)
+    win.show_debug()
+    root.after(100, win.run_startup_script)
     root.mainloop()
 
 

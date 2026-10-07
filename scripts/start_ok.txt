@@ -1,0 +1,7 @@
+# Стартовый скрипт без ошибок
+ls
+ls -l /home
+cd /home/user
+cd "My Documents"
+ls "dir with spaces" 'single quoted' plain\ escaped
+exit
